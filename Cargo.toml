@@ -17,7 +17,9 @@ crossterm = { version = "0.28", default-features = false }
 viuer = { version = "0.9", features = ["print-file"] }
 ctrlc = { version = "3.4", features = ["termination"] }
 image = "0.25"
+libheif-rs = { version = "2.1", features = ["embedded-libheif"], optional = true }
 
 [features]
 default = []
 sixel = ["viuer/sixel"]
+heif = ["dep:libheif-rs"]
