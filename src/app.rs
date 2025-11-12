@@ -14,6 +14,7 @@ use libheif_rs::{HeifContext, RgbChroma, ColorSpace, LibHeif};
 type TxRx<'a> = (&'a mpsc::Sender<bool>, &'a mpsc::Receiver<bool>);
 
 // TODO: Create a viu-specific result and error types, do not reuse viuer's
+
 // Check if it is in HEIF/HEIC format
 fn is_heif_format(buf: &[u8]) -> bool {
     if buf.len() < 12 {
@@ -28,9 +29,9 @@ fn is_heif_format(buf: &[u8]) -> bool {
     }
 }
 
-// Load image from HEIF/HEIC data
+// Load and print HEIF/HEIC image directly (optimized for memory)
 #[cfg(feature = "heif")]
-fn load_heif_image(data: &[u8]) -> Result<DynamicImage, Box<dyn std::error::Error>> {
+fn load_and_print_heif(data: &[u8], conf: &viuer::Config) -> Result<(), Box<dyn std::error::Error>> {
     let lib_heif = LibHeif::new();
     let ctx = HeifContext::read_from_bytes(data)?;
     let handle = ctx.primary_image_handle()?;
@@ -47,16 +48,20 @@ fn load_heif_image(data: &[u8]) -> Result<DynamicImage, Box<dyn std::error::Erro
     let planes = image.planes();
     let interleaved = planes.interleaved.ok_or("No interleaved plane")?;
 
-    // Convert to DynamicImage
+    // Convert to DynamicImage and print immediately
     let rgba_data = interleaved.data.to_vec();
     let img_buffer = image::RgbaImage::from_raw(width, height, rgba_data)
         .ok_or("Failed to create image buffer")?;
 
-    Ok(DynamicImage::ImageRgba8(img_buffer))
+    let img = DynamicImage::ImageRgba8(img_buffer);
+    viuer::print(&img, conf)?;
+
+    // img and buffers are dropped here, freeing memory immediately
+    Ok(())
 }
 
 #[cfg(not(feature = "heif"))]
-fn load_heif_image(_data: &[u8]) -> Result<DynamicImage, Box<dyn std::error::Error>> {
+fn load_and_print_heif(_data: &[u8], _conf: &viuer::Config) -> Result<(), Box<dyn std::error::Error>> {
     Err("HEIF support not enabled. Compile with --features heif".into())
 }
 
@@ -100,11 +105,8 @@ pub fn run(mut conf: Config) -> ViuResult {
 
         // Check if it is in HEIF/HEIC format
         if is_heif_format(&buf) {
-            match load_heif_image(&buf) {
-                Ok(img) => {
-                    viuer::print(&img, &conf.viuer_config)?;
-                    return Ok(());
-                }
+            match load_and_print_heif(&buf, &conf.viuer_config) {
+                Ok(_) => return Ok(()),
                 Err(e) => {
                     eprintln!("Failed to load HEIF image: {}", e);
                     return Err(Error::new(ErrorKind::Other, "HEIF decoding failed").into());
@@ -182,6 +184,7 @@ fn view_file(conf: &Config, filename: &str, (tx, rx): TxRx) -> ViuResult {
     if conf.name {
         println!("{}:", filename);
     }
+
     let mut file_in = fs::File::open(filename)?;
 
     // Read some of the first bytes to guess the image format
@@ -192,16 +195,16 @@ fn view_file(conf: &Config, filename: &str, (tx, rx): TxRx) -> ViuResult {
 
     // Check if it is in HEIF/HEIC format
     if is_heif_format(&format_guess_buf) {
-        // read the entire file
-        file_in.seek(std::io::SeekFrom::Start(0))?;
-        let mut buf = Vec::new();
-        file_in.read_to_end(&mut buf)?;
+        // Use a scope to ensure buffer is dropped immediately after use
+        let result = {
+            let mut buf = Vec::new();
+            file_in.read_to_end(&mut buf)?;
+            load_and_print_heif(&buf, &conf.viuer_config)
+            // buf is dropped here
+        };
 
-        match load_heif_image(&buf) {
-            Ok(img) => {
-                viuer::print(&img, &conf.viuer_config)?;
-                return Ok(());
-            }
+        match result {
+            Ok(_) => return Ok(()),
             Err(e) => {
                 eprintln!("Failed to load HEIF image {}: {}", filename, e);
                 return Err(Error::new(ErrorKind::Other, "HEIF decoding failed").into());
